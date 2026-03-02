@@ -8,22 +8,40 @@ interface LogMessage {
   level?: "info" | "error" | "success";
 }
 
+interface TaskSnapshot {
+  id: string;
+  state:
+    | "created"
+    | "running"
+    | "blocked"
+    | "paused"
+    | "succeeded"
+    | "failed";
+  updatedAt: string;
+  error?: string;
+  result?: string;
+}
+
 const AppRun = () => {
   const [running, setRunning] = useState(false);
   const [logs, setLogs] = useState<LogMessage[]>([]);
   const [streamLog, setStreamLog] = useState<LogMessage | null>();
+  const [task, setTask] = useState<TaskSnapshot | null>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const [prompt, setPrompt] = useState(
     'Open Twitter, search for "Fellou AI" and follow'
   );
 
   useEffect(() => {
-    chrome.storage.local.get(["running", "prompt"], (result) => {
+    chrome.storage.local.get(["running", "prompt", "currentTask"], (result) => {
       if (result.running !== undefined) {
         setRunning(result.running);
       }
       if (result.prompt !== undefined) {
         setPrompt(result.prompt);
+      }
+      if (result.currentTask) {
+        setTask(result.currentTask as TaskSnapshot);
       }
     });
     const messageListener = (message: any) => {
@@ -46,6 +64,8 @@ const AppRun = () => {
           setStreamLog(null);
           setLogs((prev) => [...prev, log_message]);
         }
+      } else if (message.type === "task_update" && message.task) {
+        setTask(message.task as TaskSnapshot);
       }
     };
     chrome.runtime.onMessage.addListener(messageListener);
@@ -88,6 +108,19 @@ const AppRun = () => {
     }
   };
 
+  const getTaskStateStyle = (state: TaskSnapshot["state"]) => {
+    if (state === "succeeded") {
+      return { color: "#52c41a", fontWeight: 600 };
+    }
+    if (state === "failed") {
+      return { color: "#ff4d4f", fontWeight: 600 };
+    }
+    if (state === "blocked" || state === "paused") {
+      return { color: "#faad14", fontWeight: 600 };
+    }
+    return { color: "#1677ff", fontWeight: 600 };
+  };
+
   return (
     <div
       style={{
@@ -101,6 +134,37 @@ const AppRun = () => {
           marginTop: "4px",
         }}
       >
+        {task && (
+          <div
+            style={{
+              marginBottom: "8px",
+              border: "1px solid #d9d9d9",
+              borderRadius: "4px",
+              padding: "8px",
+              backgroundColor: "#fafafa",
+              textAlign: "left",
+              fontSize: "12px",
+            }}
+          >
+            <div>
+              <strong>Task:</strong> {task.id}
+            </div>
+            <div>
+              <strong>Status:</strong>{" "}
+              <span style={getTaskStateStyle(task.state)}>{task.state}</span>
+            </div>
+            {task.error && (
+              <div>
+                <strong>Reason:</strong> {task.error}
+              </div>
+            )}
+            {task.result && (
+              <div>
+                <strong>Result:</strong> {task.result}
+              </div>
+            )}
+          </div>
+        )}
         <Input.TextArea
           ref={textAreaRef}
           rows={4}

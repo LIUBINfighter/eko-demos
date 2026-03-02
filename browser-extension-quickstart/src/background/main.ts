@@ -1,20 +1,21 @@
 import { Eko, LLMs, StreamCallbackMessage } from "@eko-ai/eko";
 import { StreamCallback, HumanCallback } from "@eko-ai/eko/types";
 import { BrowserAgent } from "@eko-ai/eko-extension";
+import { ExecutionHandle, ExecutionOutcome } from "./runtime/task-manager";
 
 export async function getLLMConfig(name: string = "llmConfig"): Promise<any> {
   let result = await chrome.storage.sync.get([name]);
   return result[name];
 }
 
-export async function main(prompt: string): Promise<Eko> {
+export async function startEkoExecution(prompt: string): Promise<ExecutionHandle> {
   let config = await getLLMConfig();
   if (!config || !config.apiKey) {
-    printLog("Please configure apiKey, configure in the eko extension options of the browser extensions.", "error");
+    const errorMessage =
+      "Please configure apiKey, configure in the eko extension options of the browser extensions.";
+    printLog(errorMessage, "error");
     chrome.runtime.openOptionsPage();
-    chrome.storage.local.set({ running: false });
-    chrome.runtime.sendMessage({ type: "stop" });
-    return;
+    throw new Error(errorMessage);
   }
 
   const llms: LLMs = {
@@ -52,19 +53,26 @@ export async function main(prompt: string): Promise<Eko> {
 
   let agents = [new BrowserAgent()];
   let eko = new Eko({ llms, agents, callback });
-  eko
+
+  const completion = eko
     .run(prompt)
-    .then((res) => {
+    .then((res): ExecutionOutcome => {
       printLog(res.result, res.success ? "success" : "error");
+      if (res.success) {
+        return { success: true, result: res.result };
+      }
+      return { success: false, error: res.result };
     })
-    .catch((error) => {
-      printLog(error, "error");
-    })
-    .finally(() => {
-      chrome.storage.local.set({ running: false });
-      chrome.runtime.sendMessage({ type: "stop" });
+    .catch((error): ExecutionOutcome => {
+      const errorMessage = normalizeError(error);
+      printLog(errorMessage, "error");
+      return { success: false, error: errorMessage };
     });
-  return eko;
+
+  return {
+    completion,
+    abort: () => abortExecution(eko),
+  };
 }
 
 async function doConfirm(prompt: string) {
@@ -93,4 +101,18 @@ function printLog(
     level: level || "info",
     stream,
   });
+}
+
+function abortExecution(eko: Eko) {
+  eko.getAllTaskId().forEach((taskId) => {
+    eko.abortTask(taskId);
+    printLog("Abort taskId: " + taskId);
+  });
+}
+
+function normalizeError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
 }

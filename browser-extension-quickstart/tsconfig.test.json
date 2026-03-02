@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "strict": false,
+    "target": "ES2020",
+    "moduleResolution": "node",
+    "module": "commonjs",
+    "esModuleInterop": true,
+    "sourceMap": false,
+    "outDir": ".tmp-tests",
+    "noEmitOnError": true,
+    "typeRoots": ["node_modules/@types"]
+  },
+  "include": ["tests/**/*.ts", "src/background/runtime/**/*.ts"],
+  "exclude": ["node_modules", "dist", ".tmp-tests"]
+}
