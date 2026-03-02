@@ -57,6 +57,7 @@ test("rejects illegal transition from terminal state", () => {
 test("task id is stable and state enum stays explicit", () => {
   const task = createTask("id check");
   assert.match(task.id, /^task_/);
+  assert.equal(task.phase, "intake");
   const states: TaskState[] = [
     "created",
     "running",
@@ -66,4 +67,18 @@ test("task id is stable and state enum stays explicit", () => {
     "failed",
   ];
   assert.equal(states.length, 6);
+});
+
+test("retry keeps task running and increments attempt", () => {
+  const task = applyTaskEvent(createTask("retry task"), { type: "start" });
+  assert.equal(task.attempt, 1);
+
+  const retriedTask = applyTaskEvent(task, {
+    type: "retry",
+    reason: "verifier requested another pass",
+  });
+
+  assert.equal(retriedTask.state, "running");
+  assert.equal(retriedTask.attempt, 2);
+  assert.equal(retriedTask.error, "verifier requested another pass");
 });

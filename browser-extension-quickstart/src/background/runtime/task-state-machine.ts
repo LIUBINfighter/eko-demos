@@ -6,19 +6,32 @@ export type TaskState =
   | "succeeded"
   | "failed";
 
+export type TaskPhase =
+  | "intake"
+  | "planning"
+  | "executing"
+  | "verifying"
+  | "recovery";
+
 export interface TaskRecord {
   id: string;
   prompt: string;
   state: TaskState;
+  phase: TaskPhase;
   createdAt: string;
   updatedAt: string;
   attempt: number;
   result?: string;
   error?: string;
+  activeStep?: string;
+  activeStepStartedAt?: string;
+  lastCompletedStep?: string;
+  lastCompletedStepDurationMs?: number;
 }
 
 export type TaskEvent =
   | { type: "start" }
+  | { type: "retry"; reason: string }
   | { type: "block"; reason: string }
   | { type: "resume" }
   | { type: "pause"; reason: string }
@@ -30,7 +43,7 @@ type IdGenerator = () => string;
 
 const ALLOWED_TRANSITIONS: Record<TaskState, TaskState[]> = {
   created: ["running"],
-  running: ["blocked", "paused", "succeeded", "failed"],
+  running: ["running", "blocked", "paused", "succeeded", "failed"],
   blocked: ["running", "paused", "failed"],
   paused: ["running", "failed"],
   succeeded: [],
@@ -59,6 +72,7 @@ export function createTask(
     id,
     prompt,
     state: "created",
+    phase: "intake",
     createdAt: now,
     updatedAt: now,
     attempt: 0,
@@ -90,9 +104,10 @@ export function applyTaskEvent(
 
   switch (event.type) {
     case "start":
+    case "retry":
       nextTask.attempt = task.attempt + 1;
-      nextTask.error = undefined;
       nextTask.result = undefined;
+      nextTask.error = event.type === "retry" ? event.reason : undefined;
       break;
     case "block":
       nextTask.error = event.reason;
@@ -120,6 +135,7 @@ export function applyTaskEvent(
 function stateFromEvent(event: TaskEvent): TaskState {
   switch (event.type) {
     case "start":
+    case "retry":
     case "resume":
       return "running";
     case "block":
@@ -133,4 +149,46 @@ function stateFromEvent(event: TaskEvent): TaskState {
     default:
       return "failed";
   }
+}
+
+export function setTaskPhase(
+  task: TaskRecord,
+  phase: TaskPhase,
+  nowProvider: Now = defaultNow
+): TaskRecord {
+  return {
+    ...task,
+    phase,
+    updatedAt: nowProvider().toISOString(),
+  };
+}
+
+export function startTaskStep(
+  task: TaskRecord,
+  stepName: string,
+  nowProvider: Now = defaultNow
+): TaskRecord {
+  const now = nowProvider().toISOString();
+  return {
+    ...task,
+    activeStep: stepName,
+    activeStepStartedAt: now,
+    updatedAt: now,
+  };
+}
+
+export function finishTaskStep(
+  task: TaskRecord,
+  stepName: string,
+  durationMs: number,
+  nowProvider: Now = defaultNow
+): TaskRecord {
+  return {
+    ...task,
+    activeStep: undefined,
+    activeStepStartedAt: undefined,
+    lastCompletedStep: stepName,
+    lastCompletedStepDurationMs: durationMs,
+    updatedAt: nowProvider().toISOString(),
+  };
 }

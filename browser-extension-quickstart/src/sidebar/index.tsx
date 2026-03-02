@@ -17,9 +17,30 @@ interface TaskSnapshot {
     | "paused"
     | "succeeded"
     | "failed";
+  phase:
+    | "intake"
+    | "planning"
+    | "executing"
+    | "verifying"
+    | "recovery";
+  attempt: number;
   updatedAt: string;
+  activeStep?: string;
+  activeStepStartedAt?: string;
+  lastCompletedStep?: string;
+  lastCompletedStepDurationMs?: number;
   error?: string;
   result?: string;
+}
+
+interface TaskEventSnapshot {
+  id: string;
+  taskId: string;
+  type: string;
+  at: string;
+  detail?: string;
+  durationMs?: number;
+  data?: Record<string, unknown>;
 }
 
 const AppRun = () => {
@@ -27,23 +48,31 @@ const AppRun = () => {
   const [logs, setLogs] = useState<LogMessage[]>([]);
   const [streamLog, setStreamLog] = useState<LogMessage | null>();
   const [task, setTask] = useState<TaskSnapshot | null>(null);
+  const [taskEvents, setTaskEvents] = useState<TaskEventSnapshot[]>([]);
+  const [nowMs, setNowMs] = useState(Date.now());
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const [prompt, setPrompt] = useState(
     'Open Twitter, search for "Fellou AI" and follow'
   );
 
   useEffect(() => {
-    chrome.storage.local.get(["running", "prompt", "currentTask"], (result) => {
-      if (result.running !== undefined) {
-        setRunning(result.running);
+    chrome.storage.local.get(
+      ["running", "prompt", "currentTask", "currentTaskEvents"],
+      (result) => {
+        if (result.running !== undefined) {
+          setRunning(result.running);
+        }
+        if (result.prompt !== undefined) {
+          setPrompt(result.prompt);
+        }
+        if (result.currentTask) {
+          setTask(result.currentTask as TaskSnapshot);
+        }
+        if (result.currentTaskEvents) {
+          setTaskEvents(result.currentTaskEvents as TaskEventSnapshot[]);
+        }
       }
-      if (result.prompt !== undefined) {
-        setPrompt(result.prompt);
-      }
-      if (result.currentTask) {
-        setTask(result.currentTask as TaskSnapshot);
-      }
-    });
+    );
     const messageListener = (message: any) => {
       if (!message) {
         return;
@@ -66,6 +95,10 @@ const AppRun = () => {
         }
       } else if (message.type === "task_update" && message.task) {
         setTask(message.task as TaskSnapshot);
+      } else if (message.type === "task_event" && message.event) {
+        setTaskEvents((prev) =>
+          [...prev, message.event as TaskEventSnapshot].slice(-200)
+        );
       }
     };
     chrome.runtime.onMessage.addListener(messageListener);
@@ -79,7 +112,14 @@ const AppRun = () => {
       behavior: "smooth",
       top: document.body.scrollHeight,
     });
-  }, [logs, streamLog]);
+  }, [logs, streamLog, taskEvents]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const handleClick = () => {
     if (running) {
@@ -92,6 +132,7 @@ const AppRun = () => {
       return;
     }
     setLogs([]);
+    setTaskEvents([]);
     setRunning(true);
     chrome.storage.local.set({ running: true, prompt });
     chrome.runtime.sendMessage({ type: "run", prompt: prompt.trim() });
@@ -120,6 +161,11 @@ const AppRun = () => {
     }
     return { color: "#1677ff", fontWeight: 600 };
   };
+
+  const activeStepElapsedMs =
+    task?.activeStepStartedAt
+      ? Math.max(0, nowMs - new Date(task.activeStepStartedAt).getTime())
+      : 0;
 
   return (
     <div
@@ -153,6 +199,24 @@ const AppRun = () => {
               <strong>Status:</strong>{" "}
               <span style={getTaskStateStyle(task.state)}>{task.state}</span>
             </div>
+            <div>
+              <strong>Phase:</strong> {task.phase}
+            </div>
+            <div>
+              <strong>Attempt:</strong> {task.attempt}
+            </div>
+            {task.activeStep && (
+              <div>
+                <strong>Active Step:</strong> {task.activeStep} (
+                {formatDuration(activeStepElapsedMs)})
+              </div>
+            )}
+            {task.lastCompletedStep && (
+              <div>
+                <strong>Last Step:</strong> {task.lastCompletedStep} (
+                {formatDuration(task.lastCompletedStepDurationMs || 0)})
+              </div>
+            )}
             {task.error && (
               <div>
                 <strong>Reason:</strong> {task.error}
@@ -163,6 +227,43 @@ const AppRun = () => {
                 <strong>Result:</strong> {task.result}
               </div>
             )}
+          </div>
+        )}
+        {taskEvents.length > 0 && (
+          <div
+            style={{
+              marginBottom: "8px",
+              border: "1px solid #d9d9d9",
+              borderRadius: "4px",
+              padding: "8px",
+              backgroundColor: "#f7f7f7",
+              textAlign: "left",
+              fontSize: "12px",
+              maxHeight: "220px",
+              overflowY: "auto",
+            }}
+          >
+            <div style={{ fontWeight: 700, marginBottom: "6px" }}>
+              Timeline (Verbose)
+            </div>
+            {[...taskEvents].reverse().map((event) => (
+              <pre
+                key={event.id}
+                style={{
+                  margin: "3px 0",
+                  fontSize: "11px",
+                  fontFamily: "monospace",
+                  whiteSpace: "pre-wrap",
+                  color: "#333",
+                }}
+              >
+                [{new Date(event.at).toLocaleTimeString()}] {event.type}
+                {event.detail ? ` | ${event.detail}` : ""}
+                {typeof event.durationMs === "number"
+                  ? ` | ${formatDuration(event.durationMs)}`
+                  : ""}
+              </pre>
+            ))}
           </div>
         )}
         <Input.TextArea
@@ -239,3 +340,16 @@ root.render(
     <AppRun />
   </React.StrictMode>
 );
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) {
+    return `${ms}ms`;
+  }
+  const sec = ms / 1000;
+  if (sec < 60) {
+    return `${sec.toFixed(1)}s`;
+  }
+  const min = Math.floor(sec / 60);
+  const rem = sec % 60;
+  return `${min}m ${rem.toFixed(0)}s`;
+}
