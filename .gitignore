@@ -1,6 +1,8 @@
 tmp/
 .env
 dist/
+*/dist/*
+dist/*
 .idea/
 .vscode/
 node_modules/

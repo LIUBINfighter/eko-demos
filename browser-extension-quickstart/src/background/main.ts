@@ -2,42 +2,50 @@ import { Eko, LLMs, StreamCallbackMessage } from "@eko-ai/eko";
 import { StreamCallback, HumanCallback } from "@eko-ai/eko/types";
 import { BrowserAgent } from "@eko-ai/eko-extension";
 import { ExecutionHandle, ExecutionOutcome } from "./runtime/task-manager";
+import {
+  normalizeStoredLLMConfig,
+  resolveActiveTabId,
+} from "./runtime/llm-config";
 
-export async function getLLMConfig(name: string = "llmConfig"): Promise<any> {
+export async function getLLMConfig(name: string = "llmConfig"): Promise<unknown> {
   let result = await chrome.storage.sync.get([name]);
   return result[name];
 }
 
 export async function startEkoExecution(prompt: string): Promise<ExecutionHandle> {
   let config = await getLLMConfig();
-  if (!config || !config.apiKey) {
-    const errorMessage =
-      "Please configure apiKey, configure in the eko extension options of the browser extensions.";
+  const normalizedConfig = normalizeStoredLLMConfig(config);
+  if (normalizedConfig.ok === false) {
+    const errorMessage = normalizedConfig.error;
     printLog(errorMessage, "error");
     chrome.runtime.openOptionsPage();
     throw new Error(errorMessage);
   }
 
+  const llmConfig = normalizedConfig.value;
+
+  const defaultModelConfig: LLMs["default"] = {
+    provider: llmConfig.provider,
+    model: llmConfig.modelName,
+    apiKey: llmConfig.apiKey,
+  };
+  if (llmConfig.baseURL) {
+    defaultModelConfig.config = { baseURL: llmConfig.baseURL };
+  }
+
   const llms: LLMs = {
-    default: {
-      provider: config.llm as any,
-      model: config.modelName,
-      apiKey: config.apiKey,
-      config: {
-        baseURL: config.options.baseURL,
-      },
-    },
+    default: defaultModelConfig,
   };
 
   let callback: StreamCallback & HumanCallback = {
     onMessage: async (message: StreamCallbackMessage) => {
-      if (message.type == "workflow") {
+      if (message.type === "workflow") {
         printLog("Plan\n" + message.workflow.xml, "info", !message.streamDone);
-      } else if (message.type == "text") {
+      } else if (message.type === "text") {
         printLog(message.text, "info", !message.streamDone);
-      } else if (message.type == "tool_streaming") {
+      } else if (message.type === "tool_streaming") {
         printLog(`${message.agentName} > ${message.toolName}\n${message.paramsText}`, "info", true);
-      } else if (message.type == "tool_use") {
+      } else if (message.type === "tool_use") {
         printLog(
           `${message.agentName} > ${message.toolName}\n${JSON.stringify(
             message.params
@@ -76,18 +84,39 @@ export async function startEkoExecution(prompt: string): Promise<ExecutionHandle
 }
 
 async function doConfirm(prompt: string) {
-  let tabs = (await chrome.tabs.query({
+  let tabs = await chrome.tabs.query({
     active: true,
     windowType: "normal",
-  })) as any[];
-  let frameResults = await chrome.scripting.executeScript({
-    target: { tabId: tabs[0].id },
-    func: (prompt) => {
-      return window.confirm(prompt);
-    },
-    args: [prompt],
   });
-  return frameResults[0].result;
+
+  const tabId = resolveActiveTabId(tabs);
+  if (tabId === null) {
+    printLog("Unable to show confirmation dialog: no active tab.", "error");
+    return false;
+  }
+
+  try {
+    let frameResults = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (confirmPrompt) => {
+        return window.confirm(confirmPrompt);
+      },
+      args: [prompt],
+    });
+
+    if (!frameResults.length) {
+      printLog("Confirmation dialog did not return a result.", "error");
+      return false;
+    }
+
+    return Boolean(frameResults[0].result);
+  } catch (error) {
+    printLog(
+      `Unable to show confirmation dialog: ${normalizeError(error)}`,
+      "error"
+    );
+    return false;
+  }
 }
 
 function printLog(
